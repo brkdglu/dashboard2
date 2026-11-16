@@ -207,6 +207,8 @@ def csv_oku(yol, mid, anahtar):
     ck = next((c for c in CIHAZ_ADAYLARI if c in df.columns), None)
     if ck:
         v = df[ck].astype(str).str.strip(); df['_DEV'] = v.where(~v.str.upper().isin(['NAN', '', 'NONE']), None)
+    for c in ('_GEN', '_DEV'):                                                 # bu ayın dosyasında cinsiyet / cihaz kolonu yoksa boş bırak
+        if c not in df.columns: df[c] = None
     tk = next((c for c in TARIFE_ADI_ADAYLARI if c in df.columns), None)
     if tk:
         df['_TAD'] = df[tk].map(lambda v: v.strip() if isinstance(v, str) and v.strip() else None)
@@ -373,7 +375,13 @@ def uret(dosyalar):
         AKTIF_DURUM_IDS = [str(vc.index[0]).replace('.0', '')]
         print(f"Aktif durum kimliği otomatik seçildi: {AKTIF_DURUM_IDS} (dağılım: {dict(vc.head(6))})")
     dims = dims_tanimla(son); ND = len(dims); sz = [len(d['labels']) for d in dims]; KO = len(OLCU); CI = [k for k, _ in OLCU].index('comp')
-    srch = [c for c in son.columns if c.endswith('_SEARCH')]; NI = len(srch)
+    srch = []                                                                  # arama kolonları: tüm ay dosyalarının başlıklarındaki *_SEARCH kolonlarının birleşimi
+    for _m, _y in dosyalar:
+        _enc = _kodlama(_y)
+        for c in pd.read_csv(_y, sep=_ayrac(_y, _enc), encoding=_enc, nrows=0).columns:
+            c = kolon_norm(c)
+            if c.endswith('_SEARCH') and c not in srch: srch.append(c)
+    srch.sort(); NI = len(srch); aramasiz = []
     kk = dict(_['kohort'])
     for _k, _d in KOHORT_VERI.values():
         for c in _d.columns: kk.setdefault(c, 'kohort klasörü')
@@ -385,7 +393,9 @@ def uret(dosyalar):
         df, bilgi = (son, None) if t == len(dosyalar) - 1 else csv_oku(yol, mid, anahtar)
         C = np.stack([d['fn'](df) for d in dims], 1); X = np.stack([df[c].to_numpy(float) for _, c in OLCU], 1)
         X[:, CI] = (np.nan_to_num(X[:, CI]) > 0).astype(float)
-        S = df[srch].fillna(0).to_numpy(np.float32) if NI else np.zeros((len(df), 0), np.float32)
+        avar = NI > 0 and any(c in df.columns for c in srch)                   # bu ayın dosyasında arama kolonu var mı
+        if NI and not avar: aramasiz.append(mid)
+        S = df.reindex(columns=srch).apply(pd.to_numeric, errors='coerce').fillna(0).to_numpy(np.float32) if NI else np.zeros((len(df), 0), np.float32)
         idv = df[anahtar].to_numpy(); st = durum_kodu(df); gk = giris_kodu(df); s0 = st == 0
         Cs, Xs, Ss = C[s0], X[s0], S[s0]
         if not s0.any():
@@ -393,10 +403,10 @@ def uret(dosyalar):
         R['tot'].append(topla(Cs, Xs, [], [], KO, True))
         R['one'].append({d['key']: topla(Cs, Xs, [i], [sz[i]], KO, True) for i, d in enumerate(dims)})
         R['pair'].append({f"{dims[a]['key']}|{dims[b]['key']}": topla(Cs, Xs, [a, b], [sz[a], sz[b]], K2) for a, b in itertools.combinations(range(ND), 2)})
-        R['srch_tot'].append(_liste(np.concatenate([(Ss > 0).sum(0), Ss.sum(0)])) if NI else [])
+        R['srch_tot'].append(_liste(np.concatenate([(Ss > 0).sum(0), Ss.sum(0)])) if avar else [])
         R['tri'].append({'|'.join(dims[i]['key'] for i in k): topla(Cs, Xs, list(k), [sz[i] for i in k], K2) for k in itertools.combinations(range(ND), 3)}
                         if t >= len(dosyalar) - TRI_AY else {})
-        R['srch_one'].append({d['key']: (_liste(np.stack([np.concatenate([(Ss[Cs[:, i] == c] > 0).sum(0), Ss[Cs[:, i] == c].sum(0)]) for c in range(sz[i])])) if NI else [])
+        R['srch_one'].append({d['key']: (_liste(np.stack([np.concatenate([(Ss[Cs[:, i] == c] > 0).sum(0), Ss[Cs[:, i] == c].sum(0)]) for c in range(sz[i])])) if avar else [])
                               for i, d in enumerate(dims)})
         # ── kohort: önceki ayın gruplarının bu aydaki churn durumu ──
         if gruplar and onceki is not None:
@@ -440,6 +450,7 @@ def uret(dosyalar):
         bos = {k: round(100 * float(np.isnan(X[s0][:, j]).mean()), 2) for j, (k, _) in enumerate(OLCU) if j != CI and np.isnan(X[s0][:, j]).any()}
         ozet.append(dict(ay=mid, satir=len(df), portfoy=int(s0.sum()), **{e: (et[e][0] if e in et else 0) for e in EV}, bos_oran=bos or ''))
     print(pd.DataFrame(ozet).to_string(index=False))
+    if aramasiz: print(f"Not: {aramasiz} dosyalarında *_SEARCH kolonları yok; bu aylarda arama ilgi alanı analizleri boş bırakıldı.")
     R['hareket_ok'] = not ortusme or float(np.median(ortusme)) >= .5
     if not R['hareket_ok']:
         print(f"⚠ '{anahtar}' aylar arasında örtüşmüyor (ortanca örtüşme %{100 * np.median(ortusme):.0f}): bu kimlik her ay yeniden üretiliyor olabilir. "
@@ -1086,7 +1097,8 @@ function pProfil(){
       if(!st.b){const o=one(T,k);return hbars(el,{items:dim(k).labels.map((l,i)=>({label:l,value:o[i][st.m],n:o[i].n,extra:[[null,'Abone',f0(o[i].n)],[null,'Pay',pct(o[i].n/m.n*100)]]})).filter(d=>d.n&&isFinite(d.value)),fmt:mf,name:ml,xName:dim(k).name})}
       const g=cube(T,[k,st.b]);return heat(el,{rows:dim(k).labels,cols:dim(st.b).labels,corner:dim(k).name+' \\ '+dim(st.b).name,name:ml,fmt:mh,minN:st.m==='n'?0:5,get:(r,c)=>{const x=g([r,c]);return {v:x[st.m],n:x.n}}})})};
   const NI=D.srch_labels.length;let srch='';
-  if(NI){const st=cs('srch',{m:'pen',b:''}),pen=st.m==='pen',ml=pen?'Arama yapan abone oranı':'Abone başı ort. arama',mf=pen?pct:f1,a=D.srch_tot[T];
+  if(NI&&!D.srch_tot[T].length)srch=plain('Arama ilgi alanları','',`<p style="color:var(--ink2)">${mLong(MONTHS[T])} dosyasında arama (*_SEARCH) kolonları yok.</p>`,'c6');
+  else if(NI){const st=cs('srch',{m:'pen',b:''}),pen=st.m==='pen',ml=pen?'Arama yapan abone oranı':'Abone başı ort. arama',mf=pen?pct:f1,a=D.srch_tot[T];
     const ord=arr(NI,i=>i).sort((q,w)=>a[w]-a[q]);
     srch=xcard('srch','Arama ilgi alanları',st.b?`${ml} · ${dim(st.b).name} kırılımında`:ml,sel('srch','m',[['pen','Yaygınlık (%)'],['avg','Ort. arama adedi']],st.m,'Ölçü')+sel('srch','b',[['','Kırılım yok']].concat(dimOpts()),st.b,'Kırılım'),el=>{
       if(!st.b)return hbars(el,{items:ord.map(i=>({label:D.srch_labels[i],value:pen?a[i]/m.n*100:a[NI+i]/m.n,extra:[[null,'Arama yapan abone',f0(a[i])]]})),fmt:mf,name:ml,xName:'İlgi alanı'});
@@ -1114,7 +1126,7 @@ function pKars(){
   if(st.d2===st.d)st.d2=D.dims.find(d=>d.key!==st.d).key;
   if(+st.b===T||+st.b<0||+st.b>TN)st.b=T>0?T-1:1;
   const Bi=+st.b,a=tot(T),b=tot(Bi),A=mLong(MONTHS[T]),B=mLong(MONTHS[Bi]),oa=one(T,st.d),ob=one(Bi,st.d),L=dim(st.d).labels,rel=(x,y)=>y?(x-y)/Math.abs(y)*100:NaN;
-  const GM=[['n','Aktif müşteri',f0,{}],['rev','Toplam gelir (Σ ARPU)',fMn,{}],['arpu','Ortalama ARPU',tl,{}],['price','Ort. tarife ücreti',tl,{}],['gb','Ort. data kullanımı',gbf,{}],['mou','Ort. ses kullanımı',dk,{}],['ten','Ort. tenure',ay,{}],['age','Ortalama yaş',f1,{neutral:true}],['comp','Şikayet oranı',pct,{up:false,pp:true,d:2}]].concat(isFinite(a.fee)?[['fee','Ort. toplam ücret',tl,{}],['bfee','Ort. paket içi ücret',tl,{}],['nbfee','Ort. paket dışı ücret',tl,{}]]:[]);
+  const GM=[['n','Aktif müşteri',f0,{}],['rev','Toplam gelir (Σ ARPU)',fMn,{}],['arpu','Ortalama ARPU',tl,{}],['price','Ort. tarife ücreti',tl,{}],['gb','Ort. data kullanımı',gbf,{}],['mou','Ort. ses kullanımı',dk,{}],['ten','Ort. tenure',ay,{}],['age','Ortalama yaş',f1,{neutral:true}],['comp','Şikayet oranı',pct,{up:false,pp:true,d:2}]].concat(isFinite(a.fee)||isFinite(a.bfee)?[['fee','Ort. toplam ücret',tl,{}],['bfee','Ort. paket içi ücret',tl,{}],['nbfee','Ort. paket dışı ücret',tl,{}]]:[]);
   const gm=GM.find(g=>g[0]===st.metric)||GM[2],sh=o=>{const N=o.reduce((s,v)=>s+v.n,0);return o.map(v=>v.n/N*100)},sa=sh(oa),sb=sh(ob);
   const HC=[['n','Adet'],['arpu','ARPU'],['gb','Data'],['mou','Ses'],['ten','Tenure'],['age','Yaş']],ga=cube(T,[st.d,st.d2]),gb_=cube(Bi,[st.d,st.d2]);
   // eşik üstü değişim listesi: önce mod (adet / oran) seçilir, sonra o modun eşiği uygulanır
@@ -1127,11 +1139,11 @@ function pKars(){
   const NIs=D.srch_labels.length,dcard=(id,k)=>{if(!has(k))return'';const xa=one(T,k),xb=one(Bi,k),pa=sh(xa),pb=sh(xb),Lk=dim(k).labels;
     return card(id,`${dim(k).name} — pay ve adet değişimi`,`${B} → ${A} · çubuk: pay değişimi (puan) · yanında adet değişimi`,el=>deltaBars(el,{items:Lk.map((l,i)=>({label:l,value:pa[i]-pb[i],note:sgnN(xa[i].n-xb[i].n)+' abone',extra:[[null,B,f0(xb[i].n)+' abone · '+pct(pb[i])],[null,A,f0(xa[i].n)+' abone · '+pct(pa[i])],[null,'Adet değişimi',sgnN(xa[i].n-xb[i].n)]]})),
       tbl:{head:[dim(k).name,B+' adet',B+' pay',A+' adet',A+' pay','Adet değişimi','Pay değişimi'],rows:Lk.map((l,i)=>[l,f0(xb[i].n),pct(pb[i]),f0(xa[i].n),pct(pa[i]),sgnN(xa[i].n-xb[i].n),(pa[i]-pb[i]>0?'+':pa[i]-pb[i]<0?'−':'')+f2(Math.abs(pa[i]-pb[i]))+' puan'])}}))};
-  const scard=()=>{if(!NIs)return'';const ua=D.srch_tot[T],ub=D.srch_tot[Bi],it=D.srch_labels.map((l,i)=>{const x=ua[i]/a.n*100,q=ub[i]/b.n*100;return {label:l,value:x-q,ua:ua[i],ub:ub[i],x,q,note:sgnN(ua[i]-ub[i])+' abone',extra:[[null,B,f0(ub[i])+' abone · '+pct(q)],[null,A,f0(ua[i])+' abone · '+pct(x)],[null,'Adet değişimi',sgnN(ua[i]-ub[i])]]}}).sort((q,w)=>Math.abs(w.value)-Math.abs(q.value)).slice(0,12).sort((q,w)=>w.value-q.value);
+  const scard=()=>{if(!NIs||!D.srch_tot[T].length||!D.srch_tot[Bi].length)return'';const ua=D.srch_tot[T],ub=D.srch_tot[Bi],it=D.srch_labels.map((l,i)=>{const x=ua[i]/a.n*100,q=ub[i]/b.n*100;return {label:l,value:x-q,ua:ua[i],ub:ub[i],x,q,note:sgnN(ua[i]-ub[i])+' abone',extra:[[null,B,f0(ub[i])+' abone · '+pct(q)],[null,A,f0(ua[i])+' abone · '+pct(x)],[null,'Adet değişimi',sgnN(ua[i]-ub[i])]]}}).sort((q,w)=>Math.abs(w.value)-Math.abs(q.value)).slice(0,12).sort((q,w)=>w.value-q.value);
     return card('kd_s','Arama ilgi alanları — en çok değişenler',`${B} → ${A} · arama yapan abone oranı (puan) · yanında adet değişimi`,el=>deltaBars(el,{items:it,tbl:{head:['İlgi alanı',B+' adet',B+' oran',A+' adet',A+' oran','Adet değişimi','Oran değişimi'],rows:it.map(d=>[d.label,f0(d.ub),pct(d.q),f0(d.ua),pct(d.x),sgnN(d.ua-d.ub),(d.value>0?'+':d.value<0?'−':'')+f2(Math.abs(d.value))+' puan'])}}))};
   return head('Aylık Karşılaştırma',`<b>${A}</b> dönemi, <b>${B}</b> dönemiyle karşılaştırılıyor. Değişimler ${B} → ${A} yönündedir.`,`<div class="controls">${sel('kx','b',MONTHS.map((id,i)=>[i,mLong(id)]).filter(x=>x[0]!==T),st.b,'Karşılaştırma ayı',1)}</div>`)+
   `<div class="grid">
-   ${plain('Temel göstergeler',`${B} ve ${A} değerleri`,`<div class="tblwrap"><table><thead><tr><th scope="col">Gösterge</th><th scope="col">${B}</th><th scope="col">${A}</th><th scope="col">Değişim</th></tr></thead><tbody>${GM.map(([k,l,f,o])=>`<tr><th scope="row">${l}</th><td>${f(b[k])}</td><td><b>${f(a[k])}</b></td><td>${delta(a[k],b[k],{...o,ref:''})}</td></tr>`).join('')}</tbody></table></div>`,'c5')}
+   ${plain('Temel göstergeler',`${B} ve ${A} değerleri`,`<div class="tblwrap"><table><thead><tr><th scope="col">Gösterge</th><th scope="col">${B}</th><th scope="col">${A}</th><th scope="col">Değişim</th></tr></thead><tbody>${GM.map(([k,l,f,o])=>`<tr><th scope="row">${l}</th><td>${isFinite(b[k])?f(b[k]):'–'}</td><td><b>${isFinite(a[k])?f(a[k]):'–'}</b></td><td>${delta(a[k],b[k],{...o,ref:''})}</td></tr>`).join('')}</tbody></table></div>`,'c5')}
    ${xcard('k0','Aylık seyir',`${gm[1]} · tüm dönemler`,sel('kx','metric',GM.map(g=>[g[0],g[1]]),gm[0],'Gösterge'),el=>lineChart(el,{labels:LBL,mark:T,fmt:gm[2],series:[{name:gm[1],color:C(1),values:MONTHS.map((_,t)=>tot(t)[gm[0]])}]}),'c7')}
    ${['rah','dig','tar','age','ten','dev','city','bon'].map(k=>dcard('kd_'+k,k)).join('')}${scard()}
    ${xcard('k3',`${dim(st.d).name} × gösterge değişimi`,`${B} → ${A} · yüzde değişim (yeşil artış, kırmızı azalış)`,sel('kx','d',dimOpts(),st.d,'Kırılım'),el=>heat(el,{rows:L,cols:HC.map(h=>h[1]),corner:dim(st.d).name,div:true,name:'Değişim',fmt:sgn,get:(r,c)=>{const k=HC[c][0];return {v:rel(oa[r][k],ob[r][k]),n:Math.min(oa[r].n,ob[r].n),extra:[[null,B,MS[k][1](ob[r][k])],[null,A,MS[k][1](oa[r][k])],[null,'Abone ('+B+' → '+A+')',f0(ob[r].n)+' → '+f0(oa[r].n)]]}}}),'c12')}
