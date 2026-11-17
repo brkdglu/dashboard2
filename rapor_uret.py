@@ -58,9 +58,12 @@ SAYISAL = (['SUBSCRIBERS_LAST_TENURE_MONTHS', 'SUBS_AGE', 'TARIFF_OPTION_PRICE',
            + [f'{b}_FL' for b in BAYRAKLAR])
 METIN = ['CITY', 'BONUS_NAME', 'RAHAT_SEGMENT', 'DIGITAL_SEGMENT_NAME']
 OLCU = [('arpu', 'ARPU_TL'), ('gb', 'TOT_DATA_VOL_GB'), ('mou', 'TOT_VOI_MOU'), ('ten', 'SUBSCRIBERS_LAST_TENURE_MONTHS'), ('age', YAS_KOLONU),
-        ('price', 'TARIFF_OPTION_PRICE'), ('comp', 'COMPLAINT_FL'), ('fee', 'TOTAL_FEE_TL'), ('bfee', 'BUNDLE_FEE_TL'), ('nbfee', 'NON_BUNDLE_FEE_TL')]
+        ('fee', 'TOTAL_FEE_TL'), ('price', 'TARIFF_OPTION_PRICE'), ('comp', 'COMPLAINT_FL'), ('bfee', 'BUNDLE_FEE_TL'), ('nbfee', 'NON_BUNDLE_FEE_TL')]
+#        gelir = TOTAL_FEE_TL · data = TOT_DATA_VOL_GB · ses = TOT_VOI_MOU · tenure = SUBSCRIBERS_LAST_TENURE_DAYS (aya çevrilir)
 TENURE_GUN_ADAYLARI = ['SUBSCRIBERS_LAST_TENURE_DAYS', 'SUBSCRIBER_TENURE_DAYS']   # ay kolonu yoksa gün / 30,44 ile aya çevrilir
-K2 = 5
+K2 = 6                                       # çoklu kırılımlarda tutulan ölçüler: OLCU'nun ilk K2 tanesi
+BULLET_TARIFE_DESEN = 'Rahat Efsane Fırsat'  # ana sayfadaki tarife listesinde yalnız adı bunu içeren paketler gösterilir (filtrelerde tüm paketler)
+BC_KOLONU = 'BC'                             # fatura dönemi (billing cycle)
 ILGI = {'BANK': 'Bankacılık', 'SOCIALMEDIA': 'Sosyal medya', 'NEWS': 'Haber', 'SPORT': 'Spor', 'GAME': 'Oyun', 'MUSIC': 'Müzik', 'STREAMING': 'Video yayın',
         'ECOMMERCE': 'E-ticaret', 'HEALTH': 'Sağlık', 'RETAIL': 'Perakende', 'CLOTHES': 'Giyim', 'ACTUERIA': 'Sigorta', 'MAKEUP': 'Kozmetik', 'LUXURY': 'Lüks',
         'FOODORDER': 'Yemek siparişi', 'ART': 'Sanat', 'CHILDCARE': 'Çocuk bakımı', 'GAMBLING': 'Şans oyunları', 'CARRENT': 'Araç kiralama',
@@ -180,7 +183,7 @@ def kohort_oku(klasor):
 def csv_oku(yol, mid, anahtar):
     enc = _kodlama(yol); sep = _ayrac(yol, enc); dec, th = _ondalik(yol, enc, sep)
     baslik = list(pd.read_csv(yol, sep=sep, encoding=enc, nrows=0).columns); norm = {c: kolon_norm(c) for c in baslik}
-    ister = (set(SAYISAL) | set(METIN) | set(CINSIYET_ADAYLARI) | set(CIHAZ_ADAYLARI) | set(TARIFE_ADI_ADAYLARI) | {anahtar, 'TARIFF_ID', 'SUBSCRIBER_STATUS_ID', YAS_KOLONU} | set(ANAHTAR_ADAYLARI) | set(TENURE_GUN_ADAYLARI)
+    ister = (set(SAYISAL) | set(METIN) | set(CINSIYET_ADAYLARI) | set(CIHAZ_ADAYLARI) | set(TARIFE_ADI_ADAYLARI) | {anahtar, 'TARIFF_ID', 'SUBSCRIBER_STATUS_ID', YAS_KOLONU} | set(ANAHTAR_ADAYLARI) | set(TENURE_GUN_ADAYLARI) | {BC_KOLONU}
              | set(SKOR_ADAYLARI) | {c for v in KOHORT_KOLON.values() for c in v})
     kullan = [c for c in baslik if norm[c] in ister or norm[c].endswith('_SEARCH')]          # PHONE hiç okunmaz
     df = pd.read_csv(yol, sep=sep, encoding=enc, decimal=dec, thousands=th, usecols=kullan, low_memory=False)
@@ -188,9 +191,9 @@ def csv_oku(yol, mid, anahtar):
     if anahtar not in df.columns:
         sys.exit(f"{os.path.basename(yol)}: anahtar kolon '{anahtar}' yok.")
     ham = len(df); df = df.drop_duplicates(subset=[anahtar], keep='first').reset_index(drop=True)
-    if 'SUBSCRIBERS_LAST_TENURE_MONTHS' not in df.columns:                      # tenure gün olarak geliyorsa aya çevir
-        gk_ = next((c for c in TENURE_GUN_ADAYLARI if c in df.columns), None)
-        if gk_: df['SUBSCRIBERS_LAST_TENURE_MONTHS'] = pd.to_numeric(df[gk_], errors='coerce') / 30.4375
+    gk_ = next((c for c in TENURE_GUN_ADAYLARI if c in df.columns), None)       # tenure: gün kolonu varsa her zaman o kullanılır (aya çevrilerek)
+    if gk_: df['SUBSCRIBERS_LAST_TENURE_MONTHS'] = pd.to_numeric(df[gk_], errors='coerce') / 30.4375
+    df['_BC'] = _kstr(df[BC_KOLONU]).where(df[BC_KOLONU].notna(), None) if BC_KOLONU in df.columns else None
     if 'TARIFF_ID' not in df.columns:                                          # tarife kimliği yoksa paket adı tarife olarak kullanılır
         tk_ = next((c for c in TARIFE_ADI_ADAYLARI if c in df.columns), None)
         if tk_: df['TARIFF_ID'] = df[tk_].map(lambda v: v.strip() if isinstance(v, str) and v.strip() else None)
@@ -301,7 +304,9 @@ def dims_tanimla(df):
     if s['CITY'].notna().any(): D.append(kat_dim('city', 'Şehir', s, 'CITY', 10))
     if s[YAS_KOLONU].notna().any(): D.append(bant_dim('age', 'Yaş', s, YAS_KOLONU, '', kenar=[25, 35, 45, 55, 65]))
     if s['SUBSCRIBERS_LAST_TENURE_MONTHS'].notna().any(): D.append(bant_dim('ten', 'Tenure', s, 'SUBSCRIBERS_LAST_TENURE_MONTHS', ' ay', kenar=[7, 13, 25, 37, 61]))
+    if '_BC' in s and s['_BC'].notna().any(): D.append(kat_dim('bc', 'Fatura dönemi (BC)', s, '_BC', 14, lambda v: f'BC {v}'))
     if s['ARPU_TL'].notna().any(): D.append(bant_dim('ab', 'ARPU bandı', s, 'ARPU_TL', ' TL'))
+    if s['TOTAL_FEE_TL'].notna().any(): D.append(bant_dim('fb', 'Gelir bandı', s, 'TOTAL_FEE_TL', ' TL'))
     if s['TOT_DATA_VOL_GB'].notna().any(): D.append(bant_dim('gbb', 'Data kullanım bandı', s, 'TOT_DATA_VOL_GB', ' GB'))
     if s['TOT_VOI_MOU'].notna().any(): D.append(bant_dim('mb', 'Ses kullanım bandı', s, 'TOT_VOI_MOU', ' dk'))
     if s['BONUS_NAME'].notna().any(): D.append(kat_dim('bon', 'Ek paket', s, 'BONUS_NAME', 6, bos='Ek paket yok'))
@@ -381,13 +386,13 @@ def uret(dosyalar):
         for c in pd.read_csv(_y, sep=_ayrac(_y, _enc), encoding=_enc, nrows=0).columns:
             c = kolon_norm(c)
             if c.endswith('_SEARCH') and c not in srch: srch.append(c)
-    srch.sort(); NI = len(srch); aramasiz = []
+    srch.sort(); NI = len(srch); aramasiz = []; paket = []
     kk = dict(_['kohort'])
     for _k, _d in KOHORT_VERI.values():
         for c in _d.columns: kk.setdefault(c, 'kohort klasörü')
     gruplar = [g for g in GRUPLAR if all(c in kk for c in g[3])] if any(c in kk for c in ('_L', '_A', '_K')) or '_SKOR' in kk else []
     if kk: print("Model / liste kolonları:", kk)
-    R = dict(tot=[], one=[], pair=[], tri=[], srch_tot=[], srch_one=[], ev_tot=[], ev_one=[], ev_srch=[], coh=[], fc=[]); onceki = None; ozet = []; ortusme = []
+    R = dict(tot=[], one=[], pair=[], tri=[], srch_tot=[], srch_one=[], ev_tot=[], ev_one=[], ev_srch=[], coh=[], fc=[], ev_ok=[]); onceki = None; onceki_ay = 0; ozet = []; ortusme = []
     izlenen = [(g[0], i) for i, g in enumerate(gruplar) if g[0] in ('l', 'k')]; kohortlar = []
     for t, (mid, yol) in enumerate(dosyalar):
         df, bilgi = (son, None) if t == len(dosyalar) - 1 else csv_oku(yol, mid, anahtar)
@@ -403,13 +408,17 @@ def uret(dosyalar):
         R['tot'].append(topla(Cs, Xs, [], [], KO, True))
         R['one'].append({d['key']: topla(Cs, Xs, [i], [sz[i]], KO, True) for i, d in enumerate(dims)})
         R['pair'].append({f"{dims[a]['key']}|{dims[b]['key']}": topla(Cs, Xs, [a, b], [sz[a], sz[b]], K2) for a, b in itertools.combinations(range(ND), 2)})
+        _p = pd.DataFrame(dict(ad=df['TARIFF_ID'].to_numpy()[s0], arpu=Xs[:, 0])).dropna(subset=['ad']); _p = _p[_p['ad'].map(lambda v: _sade(BULLET_TARIFE_DESEN) in _sade(v))]
+        paket.append(_p.groupby('ad')['arpu'].agg(['size', 'sum']))
         R['srch_tot'].append(_liste(np.concatenate([(Ss > 0).sum(0), Ss.sum(0)])) if avar else [])
         R['tri'].append({'|'.join(dims[i]['key'] for i in k): topla(Cs, Xs, list(k), [sz[i] for i in k], K2) for k in itertools.combinations(range(ND), 3)}
                         if t >= len(dosyalar) - TRI_AY else {})
         R['srch_one'].append({d['key']: (_liste(np.stack([np.concatenate([(Ss[Cs[:, i] == c] > 0).sum(0), Ss[Cs[:, i] == c].sum(0)]) for c in range(sz[i])])) if avar else [])
                               for i, d in enumerate(dims)})
         # ── kohort: önceki ayın gruplarının bu aydaki churn durumu ──
-        if gruplar and onceki is not None:
+        ardisik = onceki is not None and (mid // 100 * 12 + mid % 100) - (onceki_ay // 100 * 12 + onceki_ay % 100) == 1   # önceki dosya bir önceki takvim ayı mı
+        R['ev_ok'].append(bool(ardisik))
+        if gruplar and ardisik:
             pos = pd.Index(idv).get_indexer(onceki['id']); churn = pos < 0
             churn[pos >= 0] = np.isin(st[pos[pos >= 0]], CHURN_DURUM)
             R['coh'].append(kohort_topla(onceki['C'], onceki['G'], onceki['sb'], churn, sz, dims))
@@ -435,7 +444,7 @@ def uret(dosyalar):
                     kohortlar.append(kh); kaydet(kh, fA[m], fU[m], np.zeros(int(m.sum()), bool))
         # ── hareketler: gelenler (bu ay portföyde, önceki ay değil), gidenler (bu ayın çıkış durumları + dosyadan çıkanlar) ──
         et, eo, es = {}, {}, {}
-        if onceki is not None:
+        if ardisik:
             ortusme.append(float(np.isin(idv[s0], onceki['id']).mean()))
             yeni = s0 & ~np.isin(idv, onceki['id'])
             mask = {EV[k]: (yeni & (gk == k), C, X, S) for k in range(5)}
@@ -446,11 +455,14 @@ def uret(dosyalar):
                 eo[e] = {d['key']: topla(c_[m], x_[m], [i], [sz[i]], K2) for i, d in enumerate(dims)}
                 es[e] = _liste((s_[m] > 0).sum(0)) if NI else []
         R['ev_tot'].append(et); R['ev_one'].append(eo); R['ev_srch'].append(es)
-        onceki = dict(id=idv[s0], C=Cs, X=Xs, S=Ss, G=Gs, sb=sbs)
+        onceki = dict(id=idv[s0], C=Cs, X=Xs, S=Ss, G=Gs, sb=sbs); onceki_ay = mid
         bos = {k: round(100 * float(np.isnan(X[s0][:, j]).mean()), 2) for j, (k, _) in enumerate(OLCU) if j != CI and np.isnan(X[s0][:, j]).any()}
         ozet.append(dict(ay=mid, satir=len(df), portfoy=int(s0.sum()), **{e: (et[e][0] if e in et else 0) for e in EV}, bos_oran=bos or ''))
     print(pd.DataFrame(ozet).to_string(index=False))
     if aramasiz: print(f"Not: {aramasiz} dosyalarında *_SEARCH kolonları yok; bu aylarda arama ilgi alanı analizleri boş bırakıldı.")
+    _ad = list(paket[-1].sort_values('size', ascending=False).index) + sorted({a for p_ in paket for a in p_.index} - set(paket[-1].index))
+    R['pk'] = dict(desen=BULLET_TARIFE_DESEN, labels=[str(a) for a in _ad], n=[[int(p_['size'].get(a, 0)) for a in _ad] for p_ in paket],
+                   arpu=[[round(float(p_['sum'].get(a, 0)), 1) for a in _ad] for p_ in paket])
     R['hareket_ok'] = not ortusme or float(np.median(ortusme)) >= .5
     if not R['hareket_ok']:
         print(f"⚠ '{anahtar}' aylar arasında örtüşmüyor (ortanca örtüşme %{100 * np.median(ortusme):.0f}): bu kimlik her ay yeniden üretiliyor olabilir. "
@@ -520,40 +532,67 @@ def _bicim(v, fmt):
     return f"{v:,.{nd}f}".replace(',', '§').replace('.', ',').replace('§', '.')
 
 
-def kpi_excel(yol):
-    """KPI sayfasını olduğu gibi okur: ay başlıklarının bulunduğu satırı bulur, solundaki kolonları grup (Model / Aksiyon / Gelir) ve KPI adı kabul eder.
-    Değerlere dokunulmaz; her hücre Excel'deki sayı biçimiyle (yüzde, binlik ayraç) gösterim metnine çevrilir."""
-    import openpyxl
-    ws = openpyxl.load_workbook(yol, data_only=True).worksheets[0]
-    H = [[c for c in row] for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 400))]
-    en = max(range(min(len(H), 30)), key=lambda i: sum(_ay_coz(c.value) is not None for c in H[i] if c.value is not None), default=None)
-    aylar = [(j, _ay_coz(c.value)) for j, c in enumerate(H[en]) if c.value is not None and _ay_coz(c.value)] if en is not None else []
-    if not aylar: raise ValueError("ay başlıkları bulunamadı (Mar.25, 202503 veya tarih biçiminde bir başlık satırı bekleniyor)")
+def _kpi_izgara(H):
+    """Hücre ızgarasından ([(değer, sayı biçimi)]) KPI tablosunu çıkarır: ay başlıkları satırını bulur, solundaki metin kolonlarını grup ve KPI adı kabul eder."""
+    say = lambda i: sum(_ay_coz(v) is not None for v, _ in H[i] if v is not None and str(v).strip() != '')
+    if not H: return [], [], 0
+    en = max(range(min(len(H), 60)), key=say); aylar = [(j, _ay_coz(v)) for j, (v, _) in enumerate(H[en]) if v is not None and _ay_coz(v)]
+    if len(aylar) < 2: return [], [], 0
     j0 = aylar[0][0]; satirlar = []; grup = ''
     for row in H[en + 1:]:
-        metin = [(j, str(c.value).strip()) for j, c in enumerate(row[:j0]) if isinstance(c.value, str) and c.value.strip()]
-        deger = [row[j].value if j < len(row) else None for j, _ in aylar]
-        sayi = [float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else _sayi(v) if isinstance(v, str) else None for v in deger]
+        metin = [str(v).strip() for v, _ in row[:j0] if isinstance(v, str) and v.strip()]
+        hucre = [row[j] if j < len(row) else (None, '') for j, _ in aylar]
+        sayi = []
+        for v, _ in hucre:
+            if isinstance(v, (int, float)) and not isinstance(v, bool): sayi.append(None if isinstance(v, float) and np.isnan(v) else float(v))
+            elif isinstance(v, str) and v.strip(): x = _sayi(v); sayi.append(None if x is None else x / 100 if '%' in v else x)
+            else: sayi.append(None)
         if not metin: continue
-        if len(metin) > 1: grup = metin[0][1]
-        elif all(v is None for v in sayi):                                     # yalnız grup başlığı olan satır
-            grup = metin[0][1]; continue
-        ad = metin[-1][1]
-        if all(v is None for v in sayi): continue
+        if len(metin) > 1: grup = metin[0]
+        if all(v is None for v in sayi):
+            if len(metin) == 1: grup = metin[0]                                 # yalnız grup başlığı olan satır (Model / Aksiyon / Gelir)
+            continue
+        ad = metin[-1]
         satirlar.append(dict(grup=grup, ad=ad, key=_kpi_anahtar(ad), v=[None if v is None else round(v, 6) for v in sayi],
-                             s=[_bicim(deger[i] if sayi[i] is None or isinstance(deger[i], (int, float)) else sayi[i], row[j].number_format if j < len(row) else '') for i, (j, _) in enumerate(aylar)]))
-    return [a for _, a in aylar], satirlar
+                             s=[(v.strip() if isinstance(v, str) else _bicim(v, f)) if sayi[i] is not None else '' for i, (v, f) in enumerate(hucre)]))
+    return [a for _, a in aylar], satirlar, len(aylar)
+
+
+def kpi_excel(yol):
+    """KPI tablosunu olduğu gibi okur (Excel'de tüm sayfalar taranır, ay başlığı en çok olan sayfa alınır). Değerlere dokunulmaz;
+    her hücre Excel'deki sayı biçimiyle (yüzde, binlik ayraç) gösterim metnine çevrilir."""
+    if os.path.splitext(yol)[1].lower() == '.csv':
+        enc = _kodlama(yol); d = pd.read_csv(yol, sep=_ayrac(yol, enc), encoding=enc, header=None, dtype=str)
+        return _kpi_izgara([[(None if isinstance(v, float) else v, '') for v in row] for row in d.itertuples(index=False)])[:2]
+    try:
+        import openpyxl
+    except ImportError:
+        raise RuntimeError("openpyxl paketi kurulu değil (pip install openpyxl) — ya da tabloyu CSV olarak kaydedip kpi klasörüne koyun")
+    wb = openpyxl.load_workbook(yol, data_only=True); en_iyi = ([], [], 0); bos_formul = False
+    for ws in wb.worksheets:
+        H = [[(c.value, c.number_format) for c in row] for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 500))]
+        s = _kpi_izgara(H)
+        if s[2] > en_iyi[2] and s[1]: en_iyi = s
+        elif s[2] and not s[1]: bos_formul = True
+    if not en_iyi[1]:
+        raise ValueError(f"sayfalar {wb.sheetnames} içinde ay başlıkları ve değer satırları bulunamadı"
+                         + (" — başlıklar bulundu ama hücre değerleri boş: dosya formül içeriyorsa Excel'de açıp kaydedin" if bos_formul else
+                            " — başlık satırında Mar.25, 202503 veya tarih biçiminde en az iki ay bekleniyor"))
+    return en_iyi[:2]
 
 
 def modelleri_oku(klasor):
-    """kpi klasöründeki her Excel dosyası bir proje; tablo olduğu gibi rapora eklenir."""
+    """kpi klasöründeki her Excel (veya CSV) dosyası bir proje; tablo olduğu gibi rapora eklenir."""
     out = []
-    if not klasor or not os.path.isdir(klasor): return out
-    for yol in sorted(glob.glob(os.path.join(klasor, '*'))):
-        ad, uz = os.path.splitext(os.path.basename(yol)); uz = uz.lower()
-        if ad.startswith(('~', '.')) or uz not in ('.xlsx', '.xlsm'): continue
+    if not klasor or not os.path.isdir(klasor):
+        print(f"KPI klasörü yok: {klasor}"); return out
+    dosyalar = [y for y in sorted(glob.glob(os.path.join(klasor, '*'))) if os.path.splitext(y)[1].lower() in ('.xlsx', '.xlsm', '.csv') and not os.path.basename(y).startswith(('~', '.'))]
+    if not dosyalar: print(f"KPI klasöründe .xlsx / .csv dosyası yok: {klasor} → {os.listdir(klasor)}")
+    for yol in dosyalar:
+        ad, uz = os.path.splitext(os.path.basename(yol))
         try:
             aylar, satirlar = kpi_excel(yol)
+            if not satirlar: raise ValueError("ay başlıkları veya değer satırları bulunamadı")
         except Exception as e:
             print(f"⚠ kpi/{ad}{uz} okunamadı: {e}"); continue
         out.append(dict(id=ad, ad=ad.replace('_', ' ').title(), aylar=aylar, satirlar=satirlar))
@@ -581,28 +620,38 @@ HIBRIT_DESEN = r'hibrit|hybrid'              # lifecycle tiplerinden yalnız bu 
 
 
 def lifecycle_oku(klasor):
-    """lifecycle tablosu: ay (yearmonth), lifecycle tipi ve adet kolonları. Hybrid ile ilgili tipler ay × tip tablosuna çevrilir."""
+    """lifecycle tablosu: ay, lifecycle tipi ve adet kolonları. Kolon adları rapordan geldiği gibi olabilir; ay kolonu adından değil
+    içeriğinden (YYYYMM değerleri) bulunur. Yalnız Hybrid ile ilgili tipler ay × tip tablosuna çevrilir."""
     par = []
     for yol in _dosyalar(klasor):
-        d = _tablo_oku(yol); sade = {c: _sade(c) for c in d.columns}
-        ac = next((c for c in d.columns if 'yearmonth' in sade[c] or sade[c] in ('ay', 'donem', 'monthlycalendarid')), None)
-        tc = next((c for c in d.columns if 'type' in sade[c] and 'group' not in sade[c] and 'yearmonth' not in sade[c]), None) or next((c for c in d.columns if c != ac and d[c].dtype == object), None)
-        nc = next((c for c in d.columns if any(x in sade[c] for x in ('count', 'adet', 'cnt')) and c not in (ac, tc)), None) or next((c for c in reversed(list(d.columns)) if c not in (ac, tc)), None)
-        if not (ac and tc and nc):
-            print(f"⚠ lifecycle/{os.path.basename(yol)}: ay / tip / adet kolonları bulunamadı ({list(d.columns)})"); continue
-        d = pd.DataFrame(dict(ay=d[ac].ffill().map(_ay6), tip=d[tc].astype(str).str.strip(), n=d[nc].map(lambda v: v if isinstance(v, (int, float)) else _sayi(v)))).dropna()
-        par.append(d); print(f"Lifecycle {os.path.basename(yol)}: ay={ac} · tip={tc} · adet={nc} · {len(d)} satır")
-    if not par: return None
+        ad = os.path.basename(yol)
+        if os.path.splitext(yol)[1].lower() == '.csv':
+            enc = _kodlama(yol); d = pd.read_csv(yol, sep=_ayrac(yol, enc), encoding=enc, dtype=str)
+        else: d = pd.read_excel(yol, dtype=str)
+        d = d.dropna(how='all'); sade = {c: _sade(c) for c in d.columns}
+        ayoran = {c: float(d[c].ffill().map(lambda v: _ay6(v) is not None and 1 <= int(_ay6(v)[4:6]) <= 12 and len(re.sub(r'\D', '', str(v).split('.')[0])) in (6, 8)).mean()) for c in d.columns}
+        ac = next((c for c in d.columns if 'yearmonth' in sade[c] and ayoran[c] > .8), None) or (max(ayoran, key=ayoran.get) if max(ayoran.values()) > .8 else None)
+        tc = (next((c for c in d.columns if c != ac and 'type' in sade[c] and 'group' not in sade[c] and 'yearmonth' not in sade[c]), None)
+              or next((c for c in d.columns if c != ac and d[c].map(lambda v: bool(re.search(HIBRIT_DESEN, _sade(v)))).any()), None))
+        aday = [c for c in d.columns if c not in (ac, tc) and d[c].map(lambda v: _sayi(v) is not None).mean() > .8]
+        nc = next((c for c in aday if any(x in sade[c] for x in ('distin', 'subscriber', 'adet'))), None) or next((c for c in aday if 'count' in sade[c]), None) or (aday[-1] if aday else None)
+        if not (tc and nc):
+            print(f"⚠ lifecycle/{ad}: tip / adet kolonları bulunamadı. Kolonlar: {list(d.columns)}"); continue
+        d = pd.DataFrame(dict(ay=d[ac].ffill().map(_ay6) if ac else 'Toplam', tip=d[tc].astype(str).str.strip(), n=d[nc].map(_sayi))).dropna()
+        par.append(d); print(f"Lifecycle {ad}: ay={ac or 'yok (tek toplam)'} · tip={tc} · adet={nc} · {len(d)} satır · {d['ay'].min()}–{d['ay'].max()}")
+    if not par:
+        if klasor and os.path.isdir(klasor) and not _dosyalar(klasor): print(f"Lifecycle klasöründe .csv / .xlsx dosyası yok: {os.listdir(klasor)}")
+        return None
     d = pd.concat(par); d = d[d['tip'].map(lambda s: bool(re.search(HIBRIT_DESEN, _sade(s))))]
     if d.empty:
         print("⚠ lifecycle: Hybrid ile ilgili tip bulunamadı (HIBRIT_DESEN)."); return None
     p = d.groupby(['tip', 'ay'])['n'].sum().unstack('ay').fillna(0); aylar = sorted(p.columns)
     def tur(ad):
-        s = _sade(ad); cik = re.match(r'^(hibrit|hybrid)to', s) is not None
+        s = _sade(ad); cik = re.match(r'^(hibrit|hybrid)to', s) is not None; gecis = cik or re.search(r'to(hibrit|hybrid)$', s) is not None
         hedef = 'pre' if 'prepaid' in s or 'faturasiz' in s else 'post' if 'postpaid' in s or 'faturali' in s else ''
-        return dict(ad=ad, yon='out' if cik else 'in', hat=hedef)
-    tipler = sorted(p.index, key=lambda a: (tur(a)['yon'] != 'in', a))
-    print("Lifecycle (Hybrid) tipleri:", [(a, tur(a)['yon']) for a in tipler])
+        return dict(ad=ad, yon='out' if cik else 'in', hat=hedef, sinif='gecis' if gecis else 'yeni')       # yeni = yeni müşteri kazanımı (Yeni Tesis, Port In)
+    tipler = sorted(p.index, key=lambda a: (tur(a)['yon'] != 'in', tur(a)['sinif'] != 'yeni', a))
+    print("Lifecycle (Hybrid) tipleri:", [(a, tur(a)['yon'], tur(a)['sinif']) for a in tipler])
     return dict(aylar=aylar, tipler=[tur(a) for a in tipler], v=[[int(p.loc[a, m]) for m in aylar] for a in tipler])
 
 
@@ -863,7 +912,7 @@ td.wrap-ok,th.wrap-ok{white-space:normal}
 .seg-chip[aria-checked="true"] .ct{color:var(--ink2)}
 .chart>svg text.strong,.chart>svg text.lab{paint-order:stroke;stroke:var(--surface);stroke-width:3px;stroke-linejoin:round}
 .page-head .controls{flex-wrap:wrap}
-#tip{position:fixed;z-index:60;pointer-events:none;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.16);padding:8px 10px;font-size:12px;max-width:280px;opacity:0;transition:opacity .08s}
+#tip{position:fixed;z-index:90;pointer-events:none;background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.16);padding:8px 10px;font-size:12px;max-width:280px;opacity:0;transition:opacity .08s}
 #tip.on{opacity:1}
 #tip .tt{font-weight:650;margin-bottom:4px}
 #tip .tr{display:flex;align-items:center;gap:6px;justify-content:space-between}
@@ -883,8 +932,8 @@ h3.sec{font-size:16px;margin:22px 0 10px;letter-spacing:-.01em}
 .duo{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px}
 .duo .k{font-size:11px;color:var(--muted);font-weight:600;letter-spacing:.03em;text-transform:uppercase}
 .val.sm{font-size:19px}
-.tiles.g8{grid-template-columns:repeat(8,minmax(0,1fr));gap:8px;margin-bottom:12px}
-@media(max-width:1100px){.tiles.g8{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.tiles.g8{grid-template-columns:repeat(10,minmax(0,1fr));gap:8px;margin-bottom:12px}
+@media(max-width:1180px){.tiles.g8{grid-template-columns:repeat(5,minmax(0,1fr))}}
 @media(max-width:560px){.tiles.g8{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .tile.ct{padding:8px 11px}.tile.ct .lbl{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tile.ct .val{font-size:18px;margin-top:0;white-space:nowrap}.tile.ct .dl{font-size:11px;color:var(--muted);white-space:nowrap}.tile.ct .delta{font-size:11px}
@@ -911,6 +960,13 @@ th.cur,td.cur{background:var(--accent-wash)}
 tr.grp th{background:var(--surface2);font-size:12px;color:var(--ink2);text-transform:uppercase;letter-spacing:.04em}
 tr.em th,tr.em td,.tblwrap tr.em th:first-child{background:color-mix(in srgb,var(--surface2) 55%,var(--surface))}
 .loading{padding:60px 0;text-align:center;color:var(--ink2)}
+body.fs-on{overflow:hidden}
+body.fs-on::before{content:"";position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:70}
+.card.full{position:fixed;inset:12px;z-index:80;overflow:auto;margin:0;box-shadow:0 24px 70px rgba(0,0,0,.4)}
+.card.full .tblwrap{max-height:none!important;overflow:visible}
+.card.full table{font-size:14px}.card.full table.heat td{padding:12px 8px}
+.card.full>header{position:sticky;top:-16px;background:var(--surface);z-index:3;padding:6px 0;margin-top:-6px}
+@media print{.fs-btn{display:none}}
 code{font-size:.92em;background:var(--surface2);padding:1px 5px;border-radius:5px}
 </style>
 </head>
@@ -966,7 +1022,7 @@ const colPath=(x,y,w,h,r,down)=>{if(h<=0)return'';r=Math.min(r,w/2,h);return dow
 
 /* ---- Çizgi grafik ---- */
 function lineChart(el,o){
-  const {labels,series,h=230,mark=null,target=null,zero=false,endLabel=true}=o,W=el.clientWidth||600,n=labels.length,fmt=v=>isFinite(v)?(o.fmt||f0)(v):'–';
+  const {labels,series,h:h0=230,mark=null,target=null,zero=false,endLabel=true}=o,W=el.clientWidth||600,h=FH(el,h0),n=labels.length,fmt=v=>isFinite(v)?(o.fmt||f0)(v):'–';
   let all=series.flatMap(s=>s.values).concat(target?[target.value]:[]).filter(v=>isFinite(v));if(!all.length)all=[0,1];
   let lo=zero?0:Math.min(...all),hi=Math.max(...all);const pad=(hi-lo)*.08;if(!zero)lo-=pad;hi+=pad;
   const tk=ticks(lo,hi,4);lo=tk[0];hi=tk[tk.length-1];
@@ -989,7 +1045,7 @@ function lineChart(el,o){
 }
 /* ---- Sütun grafik (gruplu / yığılmış / işaretli) ---- */
 function colChart(el,o){
-  const {labels,series,stacked=false,fmt=f0,h=230,mark=null,pct100=false,line=null}=o,W=el.clientWidth||600,n=labels.length,K=series.length;
+  const {labels,series,stacked=false,fmt=f0,h:h0=230,mark=null,pct100=false,line=null}=o,W=el.clientWidth||600,h=FH(el,h0),n=labels.length,K=series.length;
   const tot=labels.map((_,i)=>series.reduce((s,r)=>s+r.values[i],0));let lo=0,hi;
   if(stacked)hi=pct100?100:Math.max(...tot);else{const all=series.flatMap(s=>s.values);hi=Math.max(0,...all);lo=Math.min(0,...all)}
   if(line)hi=Math.max(hi,line.value);
@@ -1039,7 +1095,7 @@ const head=(t,p,extra='')=>`<div class="page-head"><div><h2>${t}</h2><p>${p}</p>
 const DIX={};D.dims.forEach((d,i)=>DIX[d.key]=i);
 const dim=k=>D.dims[DIX[k]],has=k=>k in DIX;
 const MK=D.meta.olcu||['arpu','gb','mou','ten','age','price','comp'],W1=1+2*K1,W2=1+K2;
-const st1=v=>{const o={n:v[0],rev:v[1]};MK.slice(0,K1).forEach((k,j)=>{const c=v[1+K1+j];o[k]=c?v[1+j]/c*(k==='comp'?100:1):NaN});return o};
+const FI=MK.indexOf('fee'),st1=v=>{const o={n:v[0],rev:FI>=0&&v[1+K1+FI]?v[1+FI]:NaN};MK.slice(0,K1).forEach((k,j)=>{const c=v[1+K1+j];o[k]=c?v[1+j]/c*(k==='comp'?100:1):NaN});return o};
 const st2=v=>{const o={n:v?v[0]:0};MK.slice(0,K2).forEach((k,j)=>o[k]=v&&v[0]?v[1+j]/v[0]:NaN);return o};
 const tot=t=>t>=0&&t<=TN?st1(D.tot[t]):null;
 const one=(t,k)=>{if(t<0||t>TN)return null;const a=D.one[t][k];return arr(dim(k).labels.length,c=>st1(a.slice(c*W1,(c+1)*W1)))};
@@ -1049,7 +1105,7 @@ function cube(t,keys){            // 2 veya 3 kırılımlı hücre erişimi: g([
   return ix=>{let p=0;ord.forEach((o,q)=>{p=p*sz[q]+ix[o[1]]});return st2(src.slice(p*W2,p*W2+W2))}}
 const yoyT=t=>MONTHS.indexOf(String(+MONTHS[t]-100));
 const fMn=v=>num(v/1e6,2)+' Mn TL',sgn=v=>(v>0?'+':v<0?'−':'')+'%'+f1(Math.abs(v));
-const MS={n:['Abone adedi',f0,f0],arpu:['Ort. ARPU',tl,f0],gb:['Ort. data kullanımı',gbf,f1],mou:['Ort. ses kullanımı',dk,f0],ten:['Ort. tenure',ay,f1],age:['Ort. yaş',f1,f1]};
+const MS={n:['Abone adedi',f0,f0],fee:['Ort. gelir',tl,f0],arpu:['Ort. ARPU',tl,f0],gb:['Ort. data kullanımı',gbf,f1],mou:['Ort. ses kullanımı',dk,f0],ten:['Ort. tenure',ay,f1],age:['Ort. yaş',f1,f1]};
 const msOpts=Object.entries(MS).map(([k,v])=>[k,v[0]]),dimOpts=(ex=[])=>D.dims.filter(d=>!ex.includes(d.key)).map(d=>[d.key,d.name]);
 const lc=x=>x==='ARPU'?x:x.toLocaleLowerCase('tr');
 const shortLab=l=>l.replace(/ (TL|GB|dk|ay)$/,'');
@@ -1080,14 +1136,20 @@ const empty=t=>`<section class="card"><p style="color:var(--ink2)">${t}</p></sec
 
 /* ================= Sayfa 1 — Müşteri Profili ================= */
 function pProfil(){
-  const m=tot(T),p=tot(T-1),yi=yoyT(T),y=tot(yi);
-  const G=[['Aktif müşteri',f0,'n',{}],['Ort. ARPU',tl,'arpu',{}],['Ort. data',gbf,'gb',{}],['Ort. ses',dk,'mou',{}],['Ort. tenure',ay,'ten',{}],['Ort. yaş',f1,'age',{neutral:true}]];
+  const pT=MONTHS.indexOf(addM(MONTHS[T],-1)),m=tot(T),p=tot(pT),yi=yoyT(T),y=tot(yi);
+  const G=[['Aktif müşteri',f0,'n',{}],['Toplam gelir',fMn,'rev',{}],['Ort. gelir',tl,'fee',{}],['Ort. ARPU',tl,'arpu',{}],['Ort. data',gbf,'gb',{}],['Ort. ses',dk,'mou',{}],['Ort. tenure',ay,'ten',{}],['Ort. yaş',f1,'age',{neutral:true}]];
   const cd=(x,q,o={})=>{if(q==null||!isFinite(q)||!isFinite(x)||(!o.pp&&!q))return '<span class="delta flat">–</span>';const v=o.pp?x-q:(x-q)/Math.abs(q)*100,fl=Math.abs(v)<.05,good=(v>0)===(o.up!==false);return `<span class="delta ${fl||o.neutral?'flat':good?'good':'bad'}">${fl?'■':v>0?'▲':'▼'}${f1(Math.abs(v))}</span>`};
   const ct=(l,val,x,q,w,o={})=>`<div class="tile ct"><div class="lbl">${l}</div><div class="val">${/NaN|Infinity/.test(val)?'–':val}</div><div class="dl">${cd(x,q,o)} ay · ${cd(x,w,o)} yıl</div></div>`;
-  let gen='';if(has('gen')){const sh=t=>{const o=one(t,'gen');if(!o)return null;const k=dim('gen').labels.indexOf('Kadın'),e=dim('gen').labels.indexOf('Erkek'),N=o.reduce((s,v)=>s+v.n,0);return [k<0?NaN:o[k].n/N*100,e<0?NaN:o[e].n/N*100]},a=sh(T),b=sh(T-1),c=sh(yi);
-    gen=ct('Kadın / Erkek',`%${f1(a[0])} / %${f1(a[1])}`,a[0],b&&b[0],c&&c[0],{pp:true,neutral:true})}
-  const grp=(k,title)=>{if(!has(k))return'';const a=one(T,k),b=one(T-1,k),c=one(yi,k);
-    return `<section class="card gl"><h3>${title}</h3><table class="gt"><thead><tr><th scope="col"></th><th scope="col">Adet</th><th scope="col">% ay · yıl</th><th scope="col">ARPU</th><th scope="col">% ay · yıl</th></tr></thead><tbody>${dim(k).labels.map((l,i)=>a[i].n?`<tr tabindex="0" data-tip="${esc(tipH(l,[[null,'Adet',f0(a[i].n)],[null,'Pay',pct(a[i].n/m.n*100)],[null,'Ort. ARPU',tl(a[i].arpu)]].concat(b?[[null,'Önceki ay adet',f0(b[i].n)],[null,'Önceki ay ARPU',tl(b[i].arpu)]]:[],c?[[null,'Geçen yıl adet',f0(c[i].n)],[null,'Geçen yıl ARPU',tl(c[i].arpu)]]:[])))}"><th scope="row">${esc(l)}</th><td><b>${f0(a[i].n)}</b></td><td class="d">${cd(a[i].n,b&&b[i].n)} · ${cd(a[i].n,c&&c[i].n)}</td><td><b>${f0(a[i].arpu)}</b></td><td class="d">${cd(a[i].arpu,b&&b[i].arpu)} · ${cd(a[i].arpu,c&&c[i].arpu)}</td></tr>`:'').join('')}</tbody></table></section>`};
+  const gth='<thead><tr><th scope="col"></th><th scope="col">Adet</th><th scope="col">% ay · yıl</th><th scope="col">ARPU</th><th scope="col">% ay · yıl</th></tr></thead>';
+  const pkList=()=>{const P=D.pk;if(!P||!P.labels.length||!P.n[T].some(v=>v))return grp('tar','Tarife seçenekleri');
+    const n=P.n[T],s=P.arpu[T],np=pT>=0?P.n[pT]:null,sp=pT>=0?P.arpu[pT]:null,ny=yi>=0?P.n[yi]:null,sy=yi>=0?P.arpu[yi]:null,av=(a,q,i)=>a&&q&&q[i]?a[i]/q[i]:null;
+    return `<section class="card gl"><h3>Tarife seçenekleri · ${esc(P.desen)}</h3><table class="gt">${gth}<tbody>${P.labels.map((l,i)=>n[i]?`<tr tabindex="0" data-tip="${esc(tipH(l,[[null,'Adet',f0(n[i])],[null,'Pay',pct(n[i]/m.n*100)],[null,'Ort. ARPU',tl(s[i]/n[i])]].concat(np?[[null,'Önceki ay adet',f0(np[i])]]:[],ny?[[null,'Geçen yıl adet',f0(ny[i])]]:[])))}"><th scope="row" title="${esc(l)}">${esc(l.replace(P.desen,'').trim()||l)}</th><td><b>${f0(n[i])}</b></td><td class="d">${cd(n[i],np&&np[i])} · ${cd(n[i],ny&&ny[i])}</td><td><b>${f0(s[i]/n[i])}</b></td><td class="d">${cd(s[i]/n[i],av(sp,np,i))} · ${cd(s[i]/n[i],av(sy,ny,i))}</td></tr>`:'').join('')}</tbody></table></section>`};
+  const bcCard=()=>{if(!has('bc'))return'';const a=one(T,'bc'),b=one(pT,'bc'),c=one(yi,'bc');
+    return `<section class="card gl" style="margin:-6px 0 16px"><h3 style="margin-bottom:6px">Fatura dönemi (BC) · abone adedi</h3><div class="minis">${dim('bc').labels.map((l,i)=>a[i].n?`<div class="mini" tabindex="0" data-tip="${esc(tipH(l,[[null,'Adet',f0(a[i].n)],[null,'Pay',pct(a[i].n/m.n*100)],[null,'Ort. gelir',isFinite(a[i].fee)?tl(a[i].fee):'–'],[null,'Ort. ARPU',tl(a[i].arpu)]]))}"><div class="nm">${esc(l)}</div><div class="ln"><b>${f0(a[i].n)}</b><span>${pct(a[i].n/m.n*100)}</span></div><div class="ln"><span>ay · yıl</span><span>${cd(a[i].n,b&&b[i].n)} · ${cd(a[i].n,c&&c[i].n)}</span></div></div>`:'').join('')}</div></section>`};
+  let gen='';if(has('gen')){const sh=t=>{const o=one(t,'gen');if(!o)return null;const k=dim('gen').labels.indexOf('Kadın'),e=dim('gen').labels.indexOf('Erkek'),N=o.reduce((s,v)=>s+v.n,0);return [k<0?NaN:o[k].n/N*100,e<0?NaN:o[e].n/N*100]},a=sh(T),b=sh(pT),c=sh(yi);
+    gen=ct('Kadın / Erkek',`<span style="font-size:14.5px">%${f1(a[0])} / %${f1(a[1])}</span>`,a[0],b&&b[0],c&&c[0],{pp:true,neutral:true})}
+  const grp=(k,title)=>{if(!has(k))return'';const a=one(T,k),b=one(pT,k),c=one(yi,k);
+    return `<section class="card gl"><h3>${title}</h3><table class="gt">${gth}<tbody>${dim(k).labels.map((l,i)=>a[i].n?`<tr tabindex="0" data-tip="${esc(tipH(l,[[null,'Adet',f0(a[i].n)],[null,'Pay',pct(a[i].n/m.n*100)],[null,'Ort. ARPU',tl(a[i].arpu)]].concat(b?[[null,'Önceki ay adet',f0(b[i].n)],[null,'Önceki ay ARPU',tl(b[i].arpu)]]:[],c?[[null,'Geçen yıl adet',f0(c[i].n)],[null,'Geçen yıl ARPU',tl(c[i].arpu)]]:[])))}"><th scope="row">${esc(l)}</th><td><b>${f0(a[i].n)}</b></td><td class="d">${cd(a[i].n,b&&b[i].n)} · ${cd(a[i].n,c&&c[i].n)}</td><td><b>${f0(a[i].arpu)}</b></td><td class="d">${cd(a[i].arpu,b&&b[i].arpu)} · ${cd(a[i].arpu,c&&c[i].arpu)}</td></tr>`:'').join('')}</tbody></table></section>`};
   const numCard=(id,title,dk_,mk)=>{if(!has(dk_))return'';const st=cs(id,{b:''}),[ml,mf]=MS[mk];
     return xcard(id,title,st.b?`${ml} · ${dim(st.b).name} kırılımında`:`${dim(dk_).name} dağılımı · abone adedi`,sel(id,'b',[['','Kırılım yok']].concat(dimOpts([dk_])),st.b,'Kırılım'),el=>{
       if(!st.b){const o=one(T,dk_);return colChart(el,{labels:dim(dk_).labels.map(shortLab),series:[{name:'Abone adedi',color:C(1),values:o.map(v=>v.n)}],xName:dim(dk_).name,h:230,tipTitle:i=>dim(dk_).labels[i]+' · '+pct(o[i].n/m.n*100)})}
@@ -1110,12 +1172,12 @@ function pProfil(){
     el=>{const g=cube(T,[mx.r,mx.c].concat(mx.f?[mx.f]:[]));return heat(el,{rows:dim(mx.r).labels,cols:dim(mx.c).labels,corner:dim(mx.r).name+' \\ '+dim(mx.c).name,name:MS[mx.m][0],fmt:MS[mx.m][2],minN:mx.m==='n'?0:5,get:(r,c)=>{const x=g(mx.f?[r,c,+mx.fv]:[r,c]);return {v:x[mx.m],n:x.n}}})},'c12');
   return head('Müşteri Profili',`${mLong(MONTHS[T])} dönemi müşteri portföyü.`)+
   `<div class="tiles g8">${G.map(([l,f,k,o])=>ct(l,f(m[k]),m[k],p&&p[k],y&&y[k],o)).join('')}${gen}${ct('Şikayet oranı',pct(m.comp),m.comp,p&&p.comp,y&&y.comp,{up:false,pp:true})}</div>
-  <p class="ref" style="margin:-8px 0 8px">Kutulardaki oklar: önceki aya (ay) ve geçen yıla (yıl) göre değişim, % · oranlarda puan</p><div class="g3">${grp('rah','Rahat segmentleri')}${grp('dig','Dijital segmentler')}${grp('tar','Tarife seçenekleri')}</div>
+  <p class="ref" style="margin:-8px 0 8px">Kutulardaki oklar: önceki aya (ay) ve geçen yıla (yıl) göre değişim, % · oranlarda puan</p><div class="g3">${grp('rah','Rahat segmentleri')}${grp('dig','Dijital segmentler')}${pkList()}</div>${bcCard()}
   <h3 class="sec">Dağılımlar ve kırılımlar</h3>
   <div class="grid">
-   ${numCard('c_arpu','ARPU','ab','arpu')}${numCard('c_gb','Data (GB) kullanımı','gbb','gb')}${catCard('c_tar','Tarife türü','tar')}${numCard('c_mou','Ses kullanımı','mb','mou')}
+   ${numCard('c_fee','Gelir (TOTAL_FEE_TL)','fb','fee')}${numCard('c_arpu','ARPU','ab','arpu')}${numCard('c_gb','Data (GB) kullanımı','gbb','gb')}${catCard('c_tar','Tarife türü','tar')}${numCard('c_mou','Ses kullanımı','mb','mou')}
    ${numCard('c_ten','Tenure','ten','ten')}${numCard('c_age','Yaş dağılımı','age','age')}${catCard('c_gen','Cinsiyet','gen')}${catCard('c_city','Şehir','city')}
-   ${catCard('c_dev','Cihaz markası','dev')}${catCard('c_dig','Dijital segment','dig')}${catCard('c_rah','Rahat segment','rah')}${catCard('c_bon','Ek paket','bon')}${srch}${multi}
+   ${catCard('c_dev','Cihaz markası','dev')}${catCard('c_dig','Dijital segment','dig')}${catCard('c_rah','Rahat segment','rah')}${catCard('c_bc','Fatura dönemi (BC)','bc')}${catCard('c_bon','Ek paket','bon')}${srch}${multi}
   </div>`;
 }
 
@@ -1126,13 +1188,13 @@ function pKars(){
   if(st.d2===st.d)st.d2=D.dims.find(d=>d.key!==st.d).key;
   if(+st.b===T||+st.b<0||+st.b>TN)st.b=T>0?T-1:1;
   const Bi=+st.b,a=tot(T),b=tot(Bi),A=mLong(MONTHS[T]),B=mLong(MONTHS[Bi]),oa=one(T,st.d),ob=one(Bi,st.d),L=dim(st.d).labels,rel=(x,y)=>y?(x-y)/Math.abs(y)*100:NaN;
-  const GM=[['n','Aktif müşteri',f0,{}],['rev','Toplam gelir (Σ ARPU)',fMn,{}],['arpu','Ortalama ARPU',tl,{}],['price','Ort. tarife ücreti',tl,{}],['gb','Ort. data kullanımı',gbf,{}],['mou','Ort. ses kullanımı',dk,{}],['ten','Ort. tenure',ay,{}],['age','Ortalama yaş',f1,{neutral:true}],['comp','Şikayet oranı',pct,{up:false,pp:true,d:2}]].concat(isFinite(a.fee)||isFinite(a.bfee)?[['fee','Ort. toplam ücret',tl,{}],['bfee','Ort. paket içi ücret',tl,{}],['nbfee','Ort. paket dışı ücret',tl,{}]]:[]);
+  const GM=[['n','Aktif müşteri',f0,{}],['rev','Toplam gelir',fMn,{}],['fee','Ort. gelir (abone başı)',tl,{}],['arpu','Ortalama ARPU',tl,{}],['price','Ort. tarife ücreti',tl,{}],['gb','Ort. data kullanımı',gbf,{}],['mou','Ort. ses kullanımı',dk,{}],['ten','Ort. tenure',ay,{}],['age','Ortalama yaş',f1,{neutral:true}],['comp','Şikayet oranı',pct,{up:false,pp:true,d:2}]].concat(isFinite(a.bfee)||isFinite(a.nbfee)?[['bfee','Ort. paket içi ücret',tl,{}],['nbfee','Ort. paket dışı ücret',tl,{}]]:[]);
   const gm=GM.find(g=>g[0]===st.metric)||GM[2],sh=o=>{const N=o.reduce((s,v)=>s+v.n,0);return o.map(v=>v.n/N*100)},sa=sh(oa),sb=sh(ob);
-  const HC=[['n','Adet'],['arpu','ARPU'],['gb','Data'],['mou','Ses'],['ten','Tenure'],['age','Yaş']],ga=cube(T,[st.d,st.d2]),gb_=cube(Bi,[st.d,st.d2]);
+  const HC=[['n','Adet'],['fee','Gelir'],['arpu','ARPU'],['gb','Data'],['mou','Ses'],['ten','Tenure'],['age','Yaş']],ga=cube(T,[st.d,st.d2]),gb_=cube(Bi,[st.d,st.d2]);
   // eşik üstü değişim listesi: önce mod (adet / oran) seçilir, sonra o modun eşiği uygulanır
   const sgnN=v=>(v>0?'+':v<0?'−':'')+f0(Math.abs(v)),adet=st.mode==='adet',items=[];
   D.dims.forEach(dm=>{const xa=one(T,dm.key),xb=one(Bi,dm.key);dm.labels.forEach((l,i)=>{if(Math.min(xa[i].n,xb[i].n)<+st.minN)return;
-    (adet?[['n','Adet',f0]]:[['n','Adet',f0],['arpu','Ort. ARPU',tl],['gb','Ort. data',gbf],['mou','Ort. ses',dk]]).forEach(([k,kl,f])=>{const x=xa[i][k],q=xb[i][k],r=rel(x,q),df=x-q;
+    (adet?[['n','Adet',f0]]:[['n','Adet',f0],['fee','Ort. gelir',tl],['arpu','Ort. ARPU',tl],['gb','Ort. data',gbf],['mou','Ort. ses',dk]]).forEach(([k,kl,f])=>{const x=xa[i][k],q=xb[i][k],r=rel(x,q),df=x-q;
       if(isFinite(r)&&(adet?Math.abs(df)>=+st.thA:Math.abs(r)>=+st.thP))items.push({dm:dm.name,l,kl,f,a:x,b:q,r,df,sc:adet?Math.abs(df):Math.abs(r)})})})});
   items.sort((q,w)=>w.sc-q.sc);
   const tg=(v,l)=>`<button type="button" class="tbl-btn" id="kx-mode-${v}" data-card="kx" data-prop="mode" data-val="${v}" aria-pressed="${st.mode===v}">${l}</button>`;
@@ -1155,7 +1217,7 @@ function pKars(){
 }
 
 /* ================= Sayfa 3 — Churn & Kazanım ================= */
-const INS=D.ev.slice(0,5),OUTS=D.ev.slice(5),CH=['out_rival','out_close','out_ghost'],evL=e=>D.evl[D.ev.indexOf(e)];
+const EVOK=q=>q>=1&&(!D.ev_ok||D.ev_ok[q]),INS=D.ev.slice(0,5),OUTS=D.ev.slice(5),CH=['out_rival','out_close','out_ghost'],evL=e=>D.evl[D.ev.indexOf(e)];
 const evVec=(t,es)=>{const v=new Array(W2).fill(0);es.forEach(e=>{const x=D.ev_tot[t]&&D.ev_tot[t][e];if(x)x.forEach((q,i)=>v[i]+=q)});return v};
 const evS=(t,es)=>st2(evVec(t,es));
 const evOne=(t,es,k)=>{const n=dim(k).labels.length,v=new Array(n*W2).fill(0);es.forEach(e=>{const x=D.ev_one[t]&&D.ev_one[t][e]&&D.ev_one[t][e][k];if(x)x.forEach((q,i)=>v[i]+=q)});return arr(n,c=>st2(v.slice(c*W2,(c+1)*W2)))};
@@ -1176,16 +1238,16 @@ function flow(el,i){
 /* ---- Lifecycle: Hybrid'e giriş ve Hybrid'den geçişler ---- */
 function lcSection(){
   if(!LC)return `<h3 class="sec">Hybrid giriş ve çıkışları (lifecycle)</h3>`+empty('Lifecycle tablosu bulunamadı: <code>data/lifecycle</code> klasörüne yearmonth, lifecycle_type ve counts kolonlu tabloyu koyun.');
-  const cur=MONTHS[T],i=LC.aylar.indexOf(cur),ip=LC.aylar.indexOf(addM(cur,-1)),lab=LC.aylar.map(mShort),ser=yon=>LC.tipler.map((t,k)=>[t,k]).filter(x=>x[0].yon===yon).map(([t,k],q)=>({name:t.ad,color:C(q+1),values:LC.v[k]}));
-  const pv=(f,o)=>ip>=0?delta(f(i),f(ip),o):'',net=q=>lcSum('in',q)-lcSum('out',q),gone=T>=1&&D.hareket_ok!==false?evS(T,OUTS).n:NaN,est=gone-lcSum('out',i);
+  const cur=MONTHS[T],i=LC.aylar.indexOf(cur),ip=LC.aylar.indexOf(addM(cur,-1)),lcLab=x=>/^\d{6}$/.test(x)?mShort(x):x,lcS=(yon,sn,q)=>LC.tipler.reduce((w,t_,k)=>w+(t_.yon===yon&&t_.sinif===sn?LC.v[k][q]:0),0),lab=LC.aylar.map(lcLab),ser=yon=>LC.tipler.map((t,k)=>[t,k]).filter(x=>x[0].yon===yon).map(([t,k],q)=>({name:t.ad,color:C(q+1),values:LC.v[k]}));
+  const pv=(f,o)=>ip>=0?delta(f(i),f(ip),o):'',net=q=>lcSum('in',q)-lcSum('out',q),gone=EVOK(T)&&D.hareket_ok!==false?evS(T,OUTS).n:NaN,est=gone-lcSum('out',i);
   return `<h3 class="sec">Hybrid giriş ve çıkışları (lifecycle)</h3>`+(i<0?`<div class="ins" style="margin-bottom:12px">${mLong(cur)} için lifecycle verisi yok; grafikler tablodaki tüm ayları gösterir.</div>`:
-   `<div class="tiles">${tile('Hybrid\'e giriş',f0(lcSum('in',i)),pv(q=>lcSum('in',q)),'Yeni tesis, port-in ve Hybrid\'e geçişler')}${tile('Hybrid\'den geçiş',f0(lcSum('out',i)),pv(q=>lcSum('out',q),{up:false}),'Faturalıya ve faturasıza geçenler')}${tile('Net (giriş − geçiş)',(net(i)>0?'+':'')+f0(net(i)),pv(net))}${isFinite(est)?tile('Tahmini churn',f0(Math.max(0,est)),'',`Portföyden çıkan ${f0(gone)} − Hybrid'den geçiş ${f0(lcSum('out',i))}`):''}</div>`)+
+   `<div class="tiles">${tile('Yeni müşteri kazanımı',f0(lcS('in','yeni',i)),pv(q=>lcS('in','yeni',q)),'Yeni Tesis Hibrit + Port In Hibrit')}${tile('Diğer hat tiplerinden gelen',f0(lcS('in','gecis',i)),pv(q=>lcS('in','gecis',q)),'Prepaid ve Postpaid\'den Hybrid\'e geçenler')}${tile('Diğer hat tiplerine giden',f0(lcSum('out',i)),pv(q=>lcSum('out',q),{up:false}),'Hybrid\'den Prepaid ve Postpaid\'e geçenler')}${tile('Net (gelen − giden)',(net(i)>0?'+':'')+f0(net(i)),pv(net))}${isFinite(est)?tile('Tahmini churn',f0(Math.max(0,est)),'',`Portföyden çıkan ${f0(gone)} − Hybrid'den geçiş ${f0(lcSum('out',i))}`):''}</div>`)+
   `<div class="grid">
-   ${card('lc1','Hybrid\'e nasıl geldiler?','Aylık giriş adetleri · lifecycle tipine göre',el=>colChart(el,{labels:lab,mark:i<0?null:i,stacked:true,series:ser('in')}))}
+   ${card('lc1','Hybrid\'e nasıl geldiler?','Aylık giriş adetleri · yeni kazanım (Yeni Tesis, Port In) ve diğer hat tiplerinden geçiş',el=>colChart(el,{labels:lab,mark:i<0?null:i,stacked:true,series:ser('in')}))}
    ${card('lc2','Hybrid\'den nereye geçtiler?','Aylık geçiş adetleri · lifecycle tipine göre',el=>colChart(el,{labels:lab,mark:i<0?null:i,stacked:true,series:ser('out')}))}
    ${i>=0?card('lc3','Faturasız ↔ Hybrid ↔ Faturalı geçişleri',`${mLong(cur)} · çizgi kalınlığı geçiş adediyle orantılıdır`,el=>flow(el,i),'c6'):''}
    ${card('lc4','Net Hybrid hareketi','Giriş − geçiş (lifecycle)',el=>colChart(el,{labels:lab,mark:i<0?null:i,series:[{name:'Net',color:'var(--good)',neg:'var(--neg)',values:LC.aylar.map((_,q)=>net(q))}],h:i>=0?190:230}),i>=0?'c6':'c12')}
-   ${plain('Lifecycle tablosu','Hybrid ile ilgili tipler · aylara göre adet',`<div class="tblwrap"><table><thead><tr><th scope="col">Lifecycle tipi</th>${LC.aylar.map((m,q)=>`<th scope="col"${q===i?' class="cur"':''}>${mShort(m)}</th>`).join('')}</tr></thead><tbody>${['in','out'].map(yon=>`<tr class="grp"><th scope="row" colspan="${LC.aylar.length+1}">${yon==='in'?'Hybrid\'e giriş':'Hybrid\'den geçiş'}</th></tr>`+LC.tipler.map((t,k)=>t.yon===yon?`<tr><th scope="row">${esc(t.ad)}</th>${LC.v[k].map((v,q)=>`<td${q===i?' class="cur"':''}>${f0(v)}</td>`).join('')}</tr>`:'').join('')+`<tr class="em"><th scope="row">Toplam</th>${LC.aylar.map((_,q)=>`<td${q===i?' class="cur"':''}><b>${f0(lcSum(yon,q))}</b></td>`).join('')}</tr>`).join('')}</tbody></table></div>`,'c12')}
+   ${plain('Lifecycle tablosu','Hybrid ile ilgili tipler · aylara göre adet',`<div class="tblwrap"><table><thead><tr><th scope="col">Lifecycle tipi</th>${LC.aylar.map((m,q)=>`<th scope="col"${q===i?' class="cur"':''}>${lcLab(m)}</th>`).join('')}</tr></thead><tbody>${[['in','yeni','Yeni müşteri kazanımı'],['in','gecis','Diğer hat tiplerinden gelen'],['out','gecis','Diğer hat tiplerine giden']].filter(g=>LC.tipler.some(t=>t.yon===g[0]&&t.sinif===g[1])).map(([yon,sn,gl])=>`<tr class="grp"><th scope="row" colspan="${LC.aylar.length+1}">${gl}</th></tr>`+LC.tipler.map((t,k)=>t.yon===yon&&t.sinif===sn?`<tr><th scope="row">${esc(t.ad)}</th>${LC.v[k].map((v,q)=>`<td${q===i?' class="cur"':''}>${f0(v)}</td>`).join('')}</tr>`:'').join('')+`<tr class="em"><th scope="row">Toplam</th>${LC.aylar.map((_,q)=>`<td${q===i?' class="cur"':''}><b>${f0(lcS(yon,sn,q))}</b></td>`).join('')}</tr>`).join('')}</tbody></table></div>`,'c12')}
   </div>`;
 }
 /* ---- Kohort tablosu (liste ayına göre port-out takibi) ---- */
@@ -1257,10 +1319,10 @@ function cohSection(){
 
 function pfSection(){
   if(D.hareket_ok===false)return `<h3 class="sec">Portföy hareketi (aylık dosyalardan)</h3>`+empty('Aylık dosyalardaki abone kimliği aylar arasında örtüşmüyor; bu yüzden portföye giren ve çıkan aboneler hesaplanamadı. Aylar arasında sabit kalan bir kimlik kolonu gerekir.');
-  if(T<1)return `<h3 class="sec">Portföy hareketi (aylık dosyalardan)</h3>`+empty(`${mLong(MONTHS[T])} verideki ilk ay; portföye giren ve çıkanlar için bir önceki ayın dosyası gerekir.`);
-  const st=cs('hx',{m:'arpu',e:'out',d:has('rah')?'rah':D.dims[0].key,mm:'pay'}),t=T,ts=arr(TN,i=>i+1),LB=ts.map(i=>LBL[i]),mi=ts.indexOf(t);
-  const I=evS(t,INS),O=evS(t,OUTS),Ip=t>1?evS(t-1,INS):null,Op=t>1?evS(t-1,OUTS):null,pf=tot(t),net=I.n-O.n,cr=O.n/tot(t-1).n*100,crp=t>1?evS(t-1,OUTS).n/tot(t-2).n*100:null;
-  const ML={arpu:['ARPU',tl],gb:['Data kullanımı',gbf],mou:['Ses kullanımı',dk],ten:['Tenure',ay],age:['Yaş',f1]},[ml,mf]=ML[st.m];
+  if(!EVOK(T))return `<h3 class="sec">Portföy hareketi (aylık dosyalardan)</h3>`+empty(`${mLong(MONTHS[T])} için bir önceki ayın dosyası yok; portföye giren ve çıkanlar hesaplanamadı.`);
+  const st=cs('hx',{m:'fee',e:'out',d:has('rah')?'rah':D.dims[0].key,mm:'pay'}),t=T,ts=arr(TN,i=>i+1).filter(EVOK),LB=ts.map(i=>LBL[i]),mi=ts.indexOf(t);
+  const I=evS(t,INS),O=evS(t,OUTS),Ip=EVOK(t-1)?evS(t-1,INS):null,Op=EVOK(t-1)?evS(t-1,OUTS):null,pf=tot(t),net=I.n-O.n,cr=O.n/tot(t-1).n*100,crp=EVOK(t-1)?evS(t-1,OUTS).n/tot(t-2).n*100:null;
+  const ML={fee:['Gelir',tl],arpu:['ARPU',tl],gb:['Data kullanımı',gbf],mou:['Ses kullanımı',dk],ten:['Tenure',ay],age:['Yaş',f1]},[ml,mf]=ML[st.m];
   const EG=EVG.filter(g=>ts.some(q=>evS(q,g[2]).n>0)&&g[0]!=='churn'),eg=EG.find(g=>g[0]===st.e)||EG[0],mo=evOne(t,eg[2],st.d),po=one(t,st.d),pv=one(t-1,st.d),L=dim(st.d).labels,mN=mo.reduce((q,v)=>q+v.n,0);
   const MM=[['pay','Pay (%)'],['oran','Hareket oranı (%)']].concat(Object.entries(ML).map(([k,v])=>[k,'Ort. '+lc(v[0])]));
   const rows=[['Portföy',pf],['Portföye girenler',I],['Portföyden çıkanlar',O]].concat(D.ev.filter(e=>!['in_oth','out_ghost'].includes(e)).map(e=>[evL(e),evS(t,[e])]).filter(r=>r[1].n));
@@ -1268,13 +1330,13 @@ function pfSection(){
   <div class="tiles">
     ${tile('Portföye giren',f0(I.n),delta(I.n,Ip&&Ip.n),'Önceki ay dosyasında olmayan aboneler')}${tile('Portföyden çıkan',f0(O.n),delta(O.n,Op&&Op.n,{up:false}),'Bu ay dosyasında olmayan aboneler')}
     ${tile('Net değişim',(net>0?'+':'')+f0(net),delta(net,Ip&&Ip.n-Op.n))}${tile('Çıkış oranı',pct2(cr),delta(cr,crp,{up:false,pp:true,d:2}),'Çıkanlar / önceki ay portföyü')}
-    ${tile('Girenlerin ort. ARPU\'su',tl(I.arpu),delta(I.arpu,Ip&&Ip.arpu),'Portföy: '+tl(pf.arpu))}${tile('Çıkanların ort. ARPU\'su',tl(O.arpu),delta(O.arpu,Op&&Op.arpu,{neutral:true}),'Portföy: '+tl(pf.arpu))}
+    ${tile('Girenlerin ort. geliri',tl(I.fee),delta(I.fee,Ip&&Ip.fee),'Portföy: '+tl(pf.fee))}${tile('Çıkanların ort. geliri',tl(O.fee),delta(O.fee,Op&&Op.fee,{neutral:true}),'Portföy: '+tl(pf.fee))}
   </div>
   <div class="grid">
    ${card('h1','Portföye giren ve çıkan aboneler','Aylık adetler',el=>colChart(el,{labels:LB,mark:mi,series:[{name:'Giren',color:C(1),values:ts.map(q=>evS(q,INS).n)},{name:'Çıkan',color:C(2),values:ts.map(q=>evS(q,OUTS).n)}]}))}
    ${card('h4','Çıkış oranı','Portföyden çıkanlar / önceki ay portföyü',el=>lineChart(el,{labels:LB,mark:mi,series:[{name:'Çıkış oranı',color:C(1),values:ts.map(q=>evS(q,OUTS).n/tot(q-1).n*100)}],fmt:pct2}))}
    ${xcard('h6','Giren, çıkan ve portföy karşılaştırması',`Ortalama ${lc(ml)} · aylara göre`,sel('hx','m',Object.entries(ML).map(([k,v])=>[k,v[0]]),st.m,'Gösterge'),el=>lineChart(el,{labels:LB,mark:mi,fmt:mf,series:[{name:'Girenler',color:C(1),values:ts.map(q=>evS(q,INS)[st.m])},{name:'Çıkanlar',color:C(2),values:ts.map(q=>evS(q,OUTS)[st.m])},{name:'Portföy',color:'var(--neutral)',values:ts.map(q=>tot(q)[st.m])}]}),'c5')}
-   ${plain('Hareket edenlerin profili',`${mLong(MONTHS[t])} · adet ve ortalamalar`,`<div class="tblwrap"><table><thead><tr><th scope="col">Grup</th><th scope="col">Adet</th><th scope="col">Ort. ARPU</th><th scope="col">Ort. data</th><th scope="col">Ort. ses</th><th scope="col">Ort. tenure</th><th scope="col">Ort. yaş</th></tr></thead><tbody>${rows.map(([l,x],q)=>`<tr${q<1?' class="em"':''}><th scope="row">${esc(l)}</th><td>${f0(x.n)}</td>${[[tl,'arpu'],[gbf,'gb'],[dk,'mou'],[ay,'ten'],[f1,'age']].map(([f,k])=>`<td>${isFinite(x[k])?f(x[k]):'–'}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`,'c7')}
+   ${plain('Hareket edenlerin profili',`${mLong(MONTHS[t])} · adet ve ortalamalar`,`<div class="tblwrap"><table><thead><tr><th scope="col">Grup</th><th scope="col">Adet</th><th scope="col">Ort. gelir</th><th scope="col">Ort. ARPU</th><th scope="col">Ort. data</th><th scope="col">Ort. ses</th><th scope="col">Ort. tenure</th><th scope="col">Ort. yaş</th></tr></thead><tbody>${rows.map(([l,x],q)=>`<tr${q<1?' class="em"':''}><th scope="row">${esc(l)}</th><td>${f0(x.n)}</td>${[[tl,'fee'],[tl,'arpu'],[gbf,'gb'],[dk,'mou'],[ay,'ten'],[f1,'age']].map(([f,k])=>`<td>${isFinite(x[k])?f(x[k]):'–'}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`,'c7')}
    ${xcard('h7','Hareket edenlerin kırılımı',`${eg[1]} · ${dim(st.d).name} · ${mLong(MONTHS[t])}`,sel('hx','e',EG.map(g=>[g[0],g[1]]),eg[0],'Hareket')+sel('hx','d',dimOpts(),st.d,'Kırılım')+sel('hx','mm',MM,st.mm,'Ölçü'),el=>{
      if(st.mm==='oran')return hbars(el,{items:L.map((l,i)=>({label:l,value:pv[i].n?mo[i].n/pv[i].n*100:NaN,extra:[[null,'Hareket eden',f0(mo[i].n)],[null,'Önceki ay portföyü',f0(pv[i].n)]]})).filter(d=>isFinite(d.value)),fmt:pct2,name:'Hareket oranı',xName:dim(st.d).name});
      const pN=po.reduce((q,v)=>q+v.n,0),pay=st.mm==='pay',f=pay?pct:ML[st.mm][1];
@@ -1324,20 +1386,30 @@ function pModel(){
 const PAGES={profil:pProfil,karsilastirma:pKars,hareket:pHareket,model:pModel};
 function paint(){queue.forEach(([id,fn])=>{const el=document.getElementById(id);if(!el)return;
   if(tableMode.has(id)){const tmp=document.createElement('div');el.innerHTML=table(fn(tmp))}else fn(el)})}
+/* Kart büyütme: geniş tablo ve grafikleri kaydırmadan tam ekranda göster */
+const FH=(el,h)=>el.closest&&el.closest('.card.full')?Math.max(h,Math.min(innerHeight-250,640)):h;
+function buyut(){
+  const cards=[...document.querySelectorAll('#panel section.card')];if(S.fs!=null&&!cards[S.fs])S.fs=null;
+  cards.forEach((c,i)=>{const hd=c.querySelector(':scope>header');if(!hd)return;const on=S.fs===i,ctl=hd.querySelector(':scope>.controls')||hd;
+    ctl.insertAdjacentHTML('beforeend',`<button type="button" class="tbl-btn fs-btn" id="fs-${i}" data-fs="${i}" aria-pressed="${on}" title="${on?'Normal görünüme dön (Esc)':'Tam ekranda göster'}">${on?'✕ Küçült':'⤢ Büyüt'}</button>`);
+    c.classList.toggle('full',on)});
+  document.body.classList.toggle('fs-on',S.fs!=null);
+}
 function render(){
   const fid=document.activeElement&&document.activeElement.id,panel=$('#panel');
-  T=+S.t;queue=[];$('#foot').textContent=`Rahat Segment Panosu · Dönem: ${mLong(MONTHS[T])} · Veri: ${mLong(MONTHS[0])} – ${mLong(MONTHS[TN])} · Üretim: ${D.meta.uretim}`;panel.setAttribute('aria-labelledby','tab-'+S.tab);panel.innerHTML=PAGES[S.tab]();paint();
+  T=+S.t;queue=[];$('#foot').textContent=`Rahat Segment Panosu · Dönem: ${mLong(MONTHS[T])} · Veri: ${mLong(MONTHS[0])} – ${mLong(MONTHS[TN])} · Üretim: ${D.meta.uretim}`;panel.setAttribute('aria-labelledby','tab-'+S.tab);panel.innerHTML=PAGES[S.tab]();buyut();paint();
   document.querySelectorAll('.tab').forEach(t=>{const on=t.dataset.tab===S.tab;t.setAttribute('aria-selected',on);t.tabIndex=on?0:-1});
   if(fid){const f=document.getElementById(fid);f&&f.focus({preventScroll:true})}
 }
 $('#month').innerHTML=MONTHS.map((id,k)=>`<option value="${k}">${mLong(id)}</option>`).join('');$('#month').value=T;
 $('#month').addEventListener('change',e=>{S.t=+e.target.value;render()});
 $('#tabs').innerHTML=TABS.map(([id,l],k)=>`<button class="tab" role="tab" type="button" id="tab-${id}" data-tab="${id}" aria-controls="panel"><span class="n" aria-hidden="true">${k+1}</span>${l}</button>`).join('');
-const go=t=>{S.tab=t;history.replaceState(null,'','#'+t);render()};
+const go=t=>{S.fs=null;S.tab=t;history.replaceState(null,'','#'+t);render()};
 $('#tabs').addEventListener('click',e=>{const t=e.target.closest('.tab');if(!t)return;go(t.dataset.tab);window.scrollTo({top:0})});
 $('#tabs').addEventListener('keydown',e=>{const k=TABS.findIndex(t=>t[0]===S.tab),n=TABS.length,j=e.key==='ArrowRight'?(k+1)%n:e.key==='ArrowLeft'?(k+n-1)%n:e.key==='Home'?0:e.key==='End'?n-1:-1;if(j<0)return;e.preventDefault();go(TABS[j][0]);$('#tab-'+S.tab).focus()});
 document.addEventListener('change',e=>{const d=e.target.dataset;if(!d||!d.card)return;const v=e.target.value;cs(d.card,{})[d.prop]=d.num?Math.max(0,+v||0):v;render()});
-document.addEventListener('click',e=>{const v=e.target.closest('button[data-val]');if(v){cs(v.dataset.card,{})[v.dataset.prop]=v.dataset.val;render();return}const b=e.target.closest('[data-tbl]');if(!b)return;const id=b.dataset.tbl;tableMode.has(id)?tableMode.delete(id):tableMode.add(id);render()});
+addEventListener('keydown',e=>{if(e.key==='Escape'&&S.fs!=null){S.fs=null;render()}});
+document.addEventListener('click',e=>{const fsb=e.target.closest('[data-fs]');if(fsb){S.fs=S.fs===+fsb.dataset.fs?null:+fsb.dataset.fs;render();return}const v=e.target.closest('button[data-val]');if(v){cs(v.dataset.card,{})[v.dataset.prop]=v.dataset.val;render();return}const b=e.target.closest('[data-tbl]');if(!b)return;const id=b.dataset.tbl;tableMode.has(id)?tableMode.delete(id):tableMode.add(id);render()});
 const setTheme=t=>{document.documentElement.dataset.theme=t;store.set('rahat-theme',t)};
 $('#theme').addEventListener('click',()=>setTheme(document.documentElement.dataset.theme==='dark'?'light':'dark'));
 const tip=$('#tip');
